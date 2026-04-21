@@ -1,0 +1,89 @@
+name: kubectl-gcloud-commands
+run-name: ${{ github.workflow }} (${{ github.event.inputs.environment }}|${{ github.event.inputs.target_gke }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to apply the changes"
+        default: "dev"
+        type: choice
+        required: true
+        options:
+          - "dev"
+          - "uat"
+          - "cdv"
+          - "cut"
+          - "prd"
+      target_gke:
+        description: "GKE Cluster targeted by the running workflow"
+        default: 'actimize-dev-test'
+        type: choice
+        required: true
+        options:
+          - 'actimize-dev-test'
+          - 'actimize-eri-001-1-dev2'
+          # ... your other clusters
+      commands:
+        description: "Commands to run (one per line, or semicolon-separated)"
+        required: true
+        type: string
+      ITSK:
+        description: "ServiceNow Implementation task number or CHG"
+        required: false
+        type: string
+
+jobs:
+  run-commands:
+    name: Execute kubectl/gcloud commands
+    if: ${{ inputs.environment == 'prd' && inputs.ITSK != '' || inputs.environment != 'prd' }}
+    runs-on:
+      group: |
+        ${{
+          inputs.environment == 'dev' && 'DEV' ||
+          inputs.environment == 'uat' && 'UAT' ||
+          inputs.environment == 'prd' && 'PRD'
+        }}
+    permissions:
+      id-token: write
+      contents: read
+    container:
+      image: artifactory.sdlc.ctl.gcp.db.com/dkr-public-local/com/db/gcp-community-images/asm-installer:1.25.2-asm.3.db-20250527.build1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Common setup - Config and Hydrating the env
+        uses: y253-q6ix/app-actimize-workflow-ext/.github/actions/common@main
+        with:
+          GOOGLE_PROJECT_DBC: ${{ env.GOOGLE_PROJECT_DBC }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          TARGET_GKE: ${{ inputs.target_gke }}
+          PIPELINE_SERVICE_ACCOUNT: ${{ env.OPS_SA }}
+          DEFAULT_WIF_PROVIDER: ${{ secrets.DEFAULT_WIF_PROVIDER }}
+
+      - name: Run commands
+        run: |
+          echo "========== Running user commands =========="
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Cluster: ${{ inputs.target_gke }}"
+          echo "==========================================="
+
+          # Replace semicolons with newlines so both formats work
+          CMDS=$(echo "${{ inputs.commands }}" | tr ';' '\n')
+
+          # Execute each command
+          while IFS= read -r cmd; do
+            # Skip empty lines
+            [ -z "$(echo "$cmd" | tr -d '[:space:]')" ] && continue
+
+            echo ""
+            echo ">>> $cmd"
+            echo "---"
+            eval "$cmd" || echo "⚠️ Command failed with exit code $?"
+            echo "---"
+          done <<< "$CMDS"
+
+          echo ""
+          echo "========== All commands completed =========="
